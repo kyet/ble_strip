@@ -23,7 +23,8 @@
 #define SWITCH       0x01
 #define DIMMER       0x02
 #define STRIP        0x03
-#define DEV_TYPE     (STRIP)
+#define STRIP2       0x04
+#define DEV_TYPE     (STRIP2)
 
 // undefine for release
 //#define __DEBUG__
@@ -45,37 +46,66 @@ PacketSerial   pktSerial;
 /* number of strip and their pin */
 #define STRIP_PIN1  2
 #define STRIP_PIN2  3
-const byte nOutlet = 2;
 
 /* fast led */
 #define CHIPSET          NEOPIXEL
+#if (DEV_TYPE == STRIP)
+const int maxPwr = 2000; // 2A
 const int nLed  = 37;
-CRGB leds1[nLed], leds2[nLed];
-const byte ledFpsDefault = 30;
-const byte ledHueDefault = 50;
+CRGB leds1[nLed];
+CRGB leds2[nLed];
+#elif (DEV_TYPE == STRIP2)
+const int maxPwr = 4000; // 4A
+const int nLed  = 160;
+CRGB leds1[nLed];
+#endif
+const byte ledFpsDefault    = 25;
+const byte ledHueFpsDefault = 50;
 typedef struct {
+	// common
 	byte mode;
 	byte brightness;
 	byte fps;
-	byte param1; /* rainbow+, confetti */
-	byte param2; /* confetti */
-	byte param3;
+
+	// effect specific
+	union {
+		struct {
+			byte param[7];
+		} generic;
+		struct {
+			byte huefps;
+			byte dir;
+			byte chance;
+		} rainbow;
+		struct {
+			byte hue1;
+			byte hue2;
+			byte hue3;
+		} chromoSaturation;
+		struct {
+			byte huefps;
+			byte chance; // unused yet..
+		} confetti;
+		struct {
+			byte huefps;
+			byte hue;
+			byte range;	
+			byte chance; // unused yet..
+		} aurora;
+	} x; // eXtended parameter
 } stripValue;
 stripValue strip;
 
 byte saturation   = 255;
-byte hue          = 0;
 
 /* strip mode */
 void stripEffectOff();
 void stripEffectDaylight();
 void stripEffectChromoSaturation();
-void stripEffectChromoSaturation2();
 void stripEffectRainbow();
-void stripEffectRainbow2();
 void stripEffectRainbowGlitter();
-void stripEffectRainbowGlitter2();
 void stripEffectConfetti();
+void stripEffectAurora();
 
 typedef void (*stripEffectFunc)();
 stripEffectFunc stripEffect[] = {
@@ -85,9 +115,7 @@ stripEffectFunc stripEffect[] = {
 	stripEffectRainbow,
 	stripEffectRainbowGlitter,
 	stripEffectConfetti,
-	stripEffectChromoSaturation2,
-	stripEffectRainbow2,
-	stripEffectRainbowGlitter2,
+	stripEffectAurora
 };
 
 const byte nEffect = sizeof(stripEffect) / sizeof(stripEffect[0]);
@@ -108,23 +136,29 @@ void setup()
 	pktSerial.setPacketHandler(&bleParser);
 	pktSerial.begin(&bleSerial);
 
-	if (DEV_TYPE == STRIP)
+	if (DEV_TYPE == STRIP || DEV_TYPE == STRIP2)
 	{
 		delay(3000); // power-up safety delay
 
-		strip.mode       = 2; // chromo saturation
-		strip.brightness = 255;
-		strip.fps        = ledFpsDefault;
-		strip.param1     = ledHueDefault;
-		strip.param2     = 0;
-		strip.param3     = 0;
+		strip.mode        = 6; // aurora 
+		strip.brightness  = 255;
+		strip.fps         = ledFpsDefault;
+
+		// aqua family - 110~130 (best:125)
+		// purple/pink family - 200~230 (best:200/220)
+		strip.x.aurora.hue   = 195;
+		strip.x.aurora.range = 40;
+//		strip.x.aurora.hue   = 100;
+//		strip.x.aurora.range = 40;
 
 		FastLED.addLeds<CHIPSET, STRIP_PIN1>(leds1, nLed).setCorrection(TypicalSMD5050);
+#if (DEV_TYPE == STRIP)
 		FastLED.addLeds<CHIPSET, STRIP_PIN2>(leds2, nLed).setCorrection(TypicalSMD5050);
+#endif
 		FastLED.setBrightness(strip.brightness);
-		FastLED.setTemperature(Candle);
-		set_max_power_in_volts_and_milliamps(5, 2000); // deprecated.. 
-		//FastLED.setMaxPowerInVoltsAndMilliamps(5, 2000);  // FastLED 3.1.1
+//		FastLED.setTemperature(Candle);
+		set_max_power_in_volts_and_milliamps(5, maxPwr); // deprecated.. 
+		//FastLED.setMaxPowerInVoltsAndMilliamps(5, maxPwr);  // FastLED 3.1.1
 	}
 }
 
@@ -139,7 +173,9 @@ void refreshStrip()
 void stripEffectOff()
 {
 	fill_solid(leds1, nLed, CRGB::Black);
+#if (DEV_TYPE == STRIP)
 	fill_solid(leds2, nLed, CRGB::Black);
+#endif
 
 	// FIXME: below not work..
 #if 0
@@ -151,57 +187,61 @@ void stripEffectOff()
 void stripEffectDaylight()
 {
 	fill_solid(leds1, nLed, CRGB::FairyLight);
+#if (DEV_TYPE == STRIP)
 	fill_solid(leds2, nLed, CRGB::FairyLight);
+#endif
+}
+
+void chromoIndex(byte *n1, byte *n2, byte *n3)
+{
+	byte r;
+
+	*n1 = *n2 = *n3 = (nLed / 3);
+
+	r = nLed % 3;
+	if (r == 1)
+	{
+		(*n2)++;
+	}
+	if (r == 2)
+	{
+		(*n1)++;
+		(*n3)++;
+	}
 }
 
 void stripEffectChromoSaturation()
 {
-	if (nLed != 37)
-	{ 
-		syslog("hey! modify hand crafted constant");
-		return;
-	}
+	byte n1, n2, n3;
+	chromoIndex(&n1, &n2, &n3);
 
-	fill_solid(leds1 + 0,  12, CHSV(HUE_GREEN, saturation, strip.brightness));
-	fill_solid(leds1 + 12, 13, CHSV(HUE_RED,   saturation, strip.brightness));
-	fill_solid(leds1 + 25, 12, CHSV(HUE_BLUE,  saturation, strip.brightness));
+	fill_solid(leds1,           n1, CHSV(strip.x.chromoSaturation.hue1, saturation, strip.brightness));
+	fill_solid(leds1 + n1,      n2, CHSV(strip.x.chromoSaturation.hue2, saturation, strip.brightness));
+	fill_solid(leds1 + n1 + n2, n3, CHSV(strip.x.chromoSaturation.hue3, saturation, strip.brightness));
 
-	fill_solid(leds2 + 0,  12, CHSV(HUE_GREEN, saturation, strip.brightness));
-	fill_solid(leds2 + 12, 13, CHSV(HUE_RED,   saturation, strip.brightness));
-	fill_solid(leds2 + 25, 12, CHSV(HUE_BLUE,  saturation, strip.brightness));
-}
-
-/* leds2 have different color */
-void stripEffectChromoSaturation2()
-{
-	if (nLed != 37)
-	{ 
-		syslog("hey! modify hand crafted constant");
-		return;
-	}
-
-	fill_solid(leds1 + 0,  12, CHSV(HUE_GREEN,  saturation, strip.brightness));
-	fill_solid(leds1 + 12, 13, CHSV(HUE_RED,    saturation, strip.brightness));
-	fill_solid(leds1 + 25, 12, CHSV(HUE_BLUE,   saturation, strip.brightness));
-
-	fill_solid(leds2 + 0,  12, CHSV(HUE_PINK,   saturation, strip.brightness));
-	fill_solid(leds2 + 12, 13, CHSV(HUE_AQUA,   saturation, strip.brightness));
-	fill_solid(leds2 + 25, 12, CHSV(HUE_YELLOW, saturation, strip.brightness));
-
-	// other candidate:  HUE_ORANGE, HUE_PURPLE
+#if (DEV_TYPE == STRIP)
+	fill_solid(leds2,           n1, CHSV(strip.x.chromoSaturation.hue1, saturation, strip.brightness));
+	fill_solid(leds2 + n1,      n2, CHSV(strip.x.chromoSaturation.hue2, saturation, strip.brightness));
+	fill_solid(leds2 + n1 + n2, n3, CHSV(strip.x.chromoSaturation.hue3, saturation, strip.brightness));
+#endif
 }
 
 void stripEffectRainbow()
 {
-	fill_rainbow(leds1, nLed, hue, 255/nLed);
-	fill_rainbow(leds2, nLed, hue, 255/nLed);
-}
+	byte static hue = ledHueFpsDefault;
 
-/* leds2 have reverse order */
-void stripEffectRainbow2()
-{
+	if (strip.x.rainbow.huefps > 0)
+	{
+		EVERY_N_MILLISECONDS(1000/strip.x.rainbow.huefps) { hue++; }
+	}
+
 	fill_rainbow(leds1, nLed, hue, 255/nLed);
-	fill_rainbow(leds2, nLed, (255-hue), 255/nLed);
+#if (DEV_TYPE == STRIP)
+	if (strip.x.rainbow.dir == 0)
+		fill_rainbow(leds2, nLed, hue, 255/nLed);
+	else // reverse direction
+		fill_rainbow(leds2, nLed, (255-hue), 255/nLed);
+#endif
 }
 
 void rainbowGlitter(fract8 chance)
@@ -214,32 +254,53 @@ void rainbowGlitter(fract8 chance)
 void stripEffectRainbowGlitter()
 {
 	stripEffectRainbow();
-	rainbowGlitter(strip.param2);
-}
-
-void stripEffectRainbowGlitter2()
-{
-	stripEffectRainbow2();
-	rainbowGlitter(strip.param2);
+	rainbowGlitter(strip.x.rainbow.chance);
 }
 
 void stripEffectConfetti()
 {
+	byte static hue = ledHueFpsDefault;
 	uint8_t pos = random8(nLed);
 
+	if (strip.x.confetti.huefps > 0)
+	{
+		EVERY_N_MILLISECONDS(1000/strip.x.confetti.huefps) { hue++; }
+	}
+
 	fadeToBlackBy(leds1, nLed, 10);
+#if (DEV_TYPE == STRIP)
 	fadeToBlackBy(leds2, nLed, 10);
+#endif
 
 	leds1[pos] += CHSV(hue + random8(64), 200, 255);
+#if (DEV_TYPE == STRIP)
 	leds2[pos] += CHSV(hue + random8(64), 200, 255);
+#endif
+}
+
+void stripEffectAurora()
+{
+	static uint8_t delta = 0;
+	uint8_t i, v, r;
+
+	for(i=0; i<nLed; i++)
+	{
+		v = cubicwave8(i + delta);
+		v = map(v, 0, 255, 50, 255);
+
+		r = random8(strip.x.aurora.range);
+		leds1[i] = CHSV(strip.x.aurora.hue + r, 255, v);
+	}
+
+	delta++;
 }
 
 /* Payload (data) 
- * .----------------------------------------------------.
- * | mode | brightness | fps | param1 | param2 | param3 |
- * |------+------------+-----+--------|--------|--------|
- * |    1 |          1 |   1 |     1  |      1 |      1 |
- * '----------------------------------------------------'
+ * .------------------------------------------------.
+ * | mode | brightness | fps | param1 | .. | param7 |
+ * |------+------------+-----+--------+----+--------|
+ * |    1 |          1 |   1 |      1 | .. |      1 |
+ * '------------------------------------------------'
  */
 void bleStrip1(const byte *data, const byte sz)
 {
@@ -247,8 +308,8 @@ void bleStrip1(const byte *data, const byte sz)
 	stripValue *dv = NULL;
 
 	// sanity check
-	if (sz != stripSize)   { return; }
-	if (DEV_TYPE != STRIP) { return; }
+	if (sz > stripSize) { return; }
+	if (DEV_TYPE != STRIP && DEV_TYPE != STRIP2) { return; }
 
 	dumpPkt(data, sz);
 
@@ -257,7 +318,7 @@ void bleStrip1(const byte *data, const byte sz)
 	syslog("STRIP mode(%d) brightness(%d) fps(%d)", 
 		dv->mode, dv->brightness, dv->fps);
 
-	memcpy(&strip, data, stripSize);
+	memcpy(&strip, data, sz);
 }
 
 /* Payload (data) 
@@ -287,6 +348,7 @@ void bleGetState()
 			break;
 
 		case STRIP:
+		case STRIP2:
 			if (strip.mode == 0){ datagram[idx++] = 0; }
 			else                { datagram[idx++] = 1; }
 
@@ -350,19 +412,14 @@ void bleParser(const byte* buffer, size_t size)
 
 void loop() 
 {
-	static byte hueFps = strip.param1;
 	pktSerial.update();
 
 	/*  30 fps -> 33.3 ms
 	    60 fps -> 16.6 ms
 	   120 fps ->  9.3 ms */
 	if (strip.fps == 0)
-		strip.fps = ledFpsDefault;
-
-	/* if hueFps is zero, don't change hue (stop moving rainbow) */
-	if (hueFps != 0)
 	{
-		EVERY_N_MILLISECONDS(1000/hueFps) { hue++; }
+		strip.fps = ledFpsDefault;
 	}
 
 	EVERY_N_MILLISECONDS(1000/strip.fps) { refreshStrip(); }
