@@ -39,14 +39,14 @@ elif [ "$MODE" == "confetti" ]; then
 elif [ "$MODE" == "aurora" ]; then
 	# 03 08 06 ff 14 14 C3 28
 	# huefps: 20 (0x14)
-	# range: 195 (0xC3) - pink
-	# huefps: 40 (0x28)
+	# hue:   195 (0xC3) - pink
+	# range:  40 (0x28)
 	cmd="09030806ff1414c32800"
 elif [ "$MODE" == "aurora2" ]; then
 	# 03 08 06 ff 14 14 64 28
 	# huefps: 20 (0x14)
-	# range: 100 (0x64) - aqua
-	# huefps: 40 (0x28)
+	# hue:   100 (0x64) - aqua
+	# range:  40 (0x28)
 	cmd="09030806ff1414642800"
 elif [ "$MODE" == "get" ]; then
 	# 00 02
